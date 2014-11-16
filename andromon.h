@@ -5,3 +5,5 @@
 
 
 struct usb_skel *andromon_usb;
+
+static struct usb_driver andromon_driver;

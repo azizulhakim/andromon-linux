@@ -15,8 +15,8 @@ check protocol details: http://source.android.com/accessories/aoa.html#establish
 #define REQ_SEND_ID			52
 #define REQ_AOA_ACTIVATE	53
 
-#define MANU	"ANDROMON"
-#define MODEL	"4901122"
+#define MANU	"IsonProjects"
+#define MODEL	"ANDROMON"
 #define DESCRIPTION	"ANDROID MONITOR DRIVER"
 #define VERSION	"1.0"
 #define URI		"www.google.com"

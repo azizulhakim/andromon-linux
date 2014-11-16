@@ -10,12 +10,168 @@
 #include "protocol.h"
 #include "andromon.h"
 #include "util.h"
+#include "fops.h"
+
+/* prevent races between open() and disconnect() */
+static DEFINE_MUTEX(disconnect_mutex);
+
+static int andromon_open(struct inode *inode, struct file *file)
+{
+	struct usb_skel *dev = NULL;
+	struct usb_interface *interface; 
+	int subminor;
+	int retval = 0;
+
+	subminor = iminor(inode);
+
+	mutex_lock(&disconnect_mutex);
+
+	interface = usb_find_interface(&andromon_driver, subminor);
+	if (!interface){
+		Debug_Print("ANDROMON", "can't find device for minor");
+		retval = -ENODEV;
+		goto exit;
+	}
+
+	dev = usb_get_intfdata(interface);
+	if (!dev){
+		retval = -ENODEV;
+		goto exit;
+	}
+
+	if (down_interruptible(&dev->sem)){
+		retval = -ERESTARTSYS;
+		goto unlock_exit;
+	}
+
+	file->private_data = dev;
+
+unlock_exit:
+	up(&dev->sem);
+	
+exit:
+//	mutex_unlock(&disconnect_mutex);
+	return retval;
+}
+
+static ssize_t andromon_read(struct file *file, char __user *user_buf, size_t
+		count, loff_t *ppos)
+{
+	struct usb_skel *dev = file->private_data;
+	char *buffer;
+	int i, retval = 0;
+
+	Debug_Print("ANDROMON", "andromon_read entered");
+
+	if (down_interruptible(&dev->sem)){
+		retval = -ERESTARTSYS;
+		goto exit;
+	}
+
+	if (!dev->udev){
+		retval = -ENODEV;
+		Debug_Print("ANDROMON", "No device or device unplugged");
+		goto unlock_exit;
+	}
+
+	if (count == 0)
+		goto unlock_exit;
+
+	if (count >= dev->data.fp) count = dev->data.fp - 1;
+
+	buffer = kmalloc(count, GFP_KERNEL);
+	for (i=0; i<dev->data.fp; i++) buffer[i] = dev->data.data[i];
+
+	printk("Count = %d\n", count);
+	printk("kernel buffer = %s\n", buffer);
+
+	if (copy_to_user(user_buf, buffer, count)) {
+		printk("ANDROMON: read error");
+        retval = -EFAULT;
+        goto unlock_exit;
+    }
+
+	retval = count;
+
+unlock_exit:
+	up(&dev->sem);
+
+exit: 
+	return retval;
+}
+
+static ssize_t andromon_write(struct file *file, const char __user *user_buf, size_t
+		count, loff_t *ppos)
+{
+	struct usb_skel *dev;
+	u8 *buffer = NULL;
+	int retval = 0;
+
+	dev = file->private_data;
+
+	if (down_interruptible(&dev->sem)){
+		retval = -ERESTARTSYS;
+		goto exit;
+	}
+
+	// verify that the device wasn't unplugged
+	if (!dev->udev){
+		retval = -ENODEV;
+		Debug_Print("ANDOROMON", "No device or device unplugged");
+		goto unlock_exit;
+	}
+
+	if (count == 0)
+		goto unlock_exit;
+
+	buffer = kmalloc(sizeof(u8) * count, GFP_KERNEL);
+	//memset(buffer, 0, sizeof(buffer));
+
+	if (copy_from_user(buffer, user_buf, count)){
+		Debug_Print("ANDROMON", "Couldn't read from user space");
+		retval = -EFAULT;
+		goto unlock_exit;
+	}
+
+	if (copy_from_user(dev->data.data, user_buf, count)){
+		Debug_Print("ANDROMON", "Couldn't read from user space");
+		retval = -EFAULT;
+		goto unlock_exit;
+	}
+
+	retval = count;
+
+unlock_exit:
+	up(&dev->sem);
+
+exit: 
+	return retval;
+}
+
+static int andromon_release(struct inode *inode, struct file *file)
+{
+	struct usb_skel *dev = NULL;
+	int retval = 0;
+
+	dev = file->private_data;
+	if (!dev){
+		Debug_Print("ANDROMON", "dev is NULL");
+		retval = -ENODEV;
+		goto exit;
+	}
+
+	kfree(dev);
+
+exit:
+	return retval;
+}
 
 static struct file_operations andromon_fops = {
 	.owner =	THIS_MODULE,
-	.write =	NULL,//andromon_write,
-	.open =		NULL,//andromon_open,
-	.release =	NULL,//andromon_release,
+	.read =		andromon_read,
+	.write =	andromon_write,
+	.open =		andromon_open,
+	.release =	andromon_release,
 };
 
 static struct usb_class_driver andromon_class = {
@@ -44,6 +200,13 @@ static int andromon_probe(struct usb_interface *interface, const struct usb_devi
 	}
 	memset(andromon_usb, 0x00, sizeof(*andromon_usb));
 	kref_init(&andromon_usb->kref);
+
+	sema_init(&andromon_usb->sem, 1);
+
+	andromon_usb->data.data[0] = 'a';
+	andromon_usb->data.data[1] = 'b';
+	andromon_usb->data.data[2] = 'c';
+	andromon_usb->data.fp = 3;
 
 	andromon_usb->udev = usb_get_dev(interface_to_usbdev(interface));
 	andromon_usb->interface = interface;
