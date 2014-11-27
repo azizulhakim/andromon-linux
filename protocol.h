@@ -74,4 +74,18 @@ int SendAOAActivationRequest(struct usb_skel *andromon_usb){
 							HZ*5);
 }
 
+int SetConfiguration(struct usb_skel *andromon_usb, char *buffer){
+	Debug_Print("ANDROMON", "Get Protocol: AOA version");
+	
+	return usb_control_msg(andromon_usb->udev,
+			usb_rcvctrlpipe(andromon_usb->udev, 0),
+			0x9,
+			USB_DIR_IN | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
+			1,
+			0,
+			NULL,
+			0,
+			HZ*5);	
+}
+
 #endif

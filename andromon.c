@@ -50,7 +50,7 @@ unlock_exit:
 	up(&dev->sem);
 	
 exit:
-//	mutex_unlock(&disconnect_mutex);
+	mutex_unlock(&disconnect_mutex);
 	return retval;
 }
 
@@ -63,6 +63,7 @@ static ssize_t andromon_read(struct file *file, char __user *user_buf, size_t
 
 	Debug_Print("ANDROMON", "andromon_read entered");
 
+	/*Debug_Print("ANDROMON", "read: down sem");
 	if (down_interruptible(&dev->sem)){
 		retval = -ERESTARTSYS;
 		goto exit;
@@ -74,41 +75,78 @@ static ssize_t andromon_read(struct file *file, char __user *user_buf, size_t
 		goto unlock_exit;
 	}
 
-	if (count == 0)
+	if ((int)count >= dev->data.fp) count = dev->data.fp - 1;
+
+	if (!((int)count > 0))
 		goto unlock_exit;
 
-	if (count >= dev->data.fp) count = dev->data.fp - 1;
-
-	buffer = kmalloc(count, GFP_KERNEL);
+	buffer = kmalloc((int)count, GFP_KERNEL);
 	for (i=0; i<dev->data.fp; i++) buffer[i] = dev->data.data[i];
 
-	printk("Count = %d\n", count);
-	printk("kernel buffer = %s\n", buffer);
-
-	if (copy_to_user(user_buf, buffer, count)) {
+	if (copy_to_user(user_buf, buffer, (int)count)) {
 		printk("ANDROMON: read error");
         retval = -EFAULT;
         goto unlock_exit;
     }
 
-	retval = count;
+	dev->data.fp -= (int)count;
+	retval = (int)count;
 
 unlock_exit:
+	Debug_Print("ANDROMON", "read: up sem");
 	up(&dev->sem);
 
 exit: 
+	return retval;*/
+
+	buffer = kmalloc((int)count, GFP_KERNEL);
+
+
+	/* do a blocking bulk read to get data from the device */
+	retval = usb_bulk_msg(dev->udev,
+			      usb_rcvbulkpipe(dev->udev, dev->bulk_in_endpointAddr),
+			      buffer,
+			      count,
+			      &count, HZ*10);
+
+	/* if the read was successful, copy the data to userspace */
+	if (!retval) {
+		if (copy_to_user(user_buf, buffer, count))
+			retval = -EFAULT;
+		else
+			retval = count;
+	}
+
 	return retval;
+}
+
+static void skel_write_bulk_callback(struct urb *urb, struct pt_regs *regs)
+{
+	/* sync/async unlink faults aren't errors */
+	if (urb->status && 
+		!(urb->status == -ENOENT || 
+		urb->status == -ECONNRESET ||
+		urb->status == -ESHUTDOWN)) {
+
+		printk("%s - nonzero write bulk status received: %d",__FUNCTION__, urb->status);
+	}
+
+	/* free up our allocated buffer */
+	usb_free_coherent(urb->dev, urb->transfer_buffer_length, 
+	urb->transfer_buffer, urb->transfer_dma);
 }
 
 static ssize_t andromon_write(struct file *file, const char __user *user_buf, size_t
 		count, loff_t *ppos)
 {
 	struct usb_skel *dev;
-	u8 *buffer = NULL;
+	char *buffer = NULL;
 	int retval = 0;
+	struct urb *urb = NULL;
 
 	dev = file->private_data;
 
+	Debug_Print("ANDROMON", "write: down sem");
 	if (down_interruptible(&dev->sem)){
 		retval = -ERESTARTSYS;
 		goto exit;
@@ -121,27 +159,54 @@ static ssize_t andromon_write(struct file *file, const char __user *user_buf, si
 		goto unlock_exit;
 	}
 
-	if (count == 0)
+	if ((int)count <= 0)
 		goto unlock_exit;
 
-	buffer = kmalloc(sizeof(u8) * count, GFP_KERNEL);
+	urb = usb_alloc_urb(0, GFP_KERNEL);
+
+//	buffer = kmalloc(sizeof(char) * (int)count, GFP_KERNEL);
+
+	buffer = usb_alloc_coherent(dev->udev, count, GFP_KERNEL, &urb->transfer_dma);
+	if (!buffer){
+		retval = -ENOMEM;
+		goto unlock_exit;
+	}
 	//memset(buffer, 0, sizeof(buffer));
 
-	if (copy_from_user(buffer, user_buf, count)){
+	if (copy_from_user(buffer, user_buf, (int)count)){
 		Debug_Print("ANDROMON", "Couldn't read from user space");
 		retval = -EFAULT;
 		goto unlock_exit;
 	}
 
-	if (copy_from_user(dev->data.data, user_buf, count)){
+	/*if (copy_from_user(dev->data.data, user_buf, (int)count)){
 		Debug_Print("ANDROMON", "Couldn't read from user space");
 		retval = -EFAULT;
 		goto unlock_exit;
+	}*/
+
+	usb_fill_bulk_urb(urb, 
+					  dev->udev,
+					  usb_sndbulkpipe(dev->udev, dev->bulk_out_endpointAddr),
+					  buffer,
+					  count,
+					  skel_write_bulk_callback,
+					  dev);
+	urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+	
+	retval = usb_submit_urb(urb, GFP_KERNEL);
+	if (retval){
+		printk("urb write failed\n");
+		goto unlock_exit;
 	}
 
-	retval = count;
+	printk("Count = %d\n", (int)count);
+
+	dev->data.fp += (int)count;
+	retval = (int)count;
 
 unlock_exit:
+	Debug_Print("ANDROMON", "write: up sem");
 	up(&dev->sem);
 
 exit: 
@@ -153,6 +218,8 @@ static int andromon_release(struct inode *inode, struct file *file)
 	struct usb_skel *dev = NULL;
 	int retval = 0;
 
+	printk("release\n");
+
 	dev = file->private_data;
 	if (!dev){
 		Debug_Print("ANDROMON", "dev is NULL");
@@ -160,7 +227,7 @@ static int andromon_release(struct inode *inode, struct file *file)
 		goto exit;
 	}
 
-	kfree(dev);
+//	kfree(dev);
 
 exit:
 	return retval;
@@ -180,6 +247,7 @@ static struct usb_class_driver andromon_class = {
 	.minor_base = ANDROMON_MINOR_BASE,
 };
 
+int p = 0;
 // probe function
 // called on device insertion iff no other dricer has beat us to the punch
 static int andromon_probe(struct usb_interface *interface, const struct usb_device_id *id){
@@ -203,16 +271,18 @@ static int andromon_probe(struct usb_interface *interface, const struct usb_devi
 
 	sema_init(&andromon_usb->sem, 1);
 
-	andromon_usb->data.data[0] = 'a';
-	andromon_usb->data.data[1] = 'b';
-	andromon_usb->data.data[2] = 'c';
-	andromon_usb->data.fp = 3;
+	//andromon_usb->data.data[0] = 'a';
+	//andromon_usb->data.data[1] = 'b';
+	//andromon_usb->data.data[2] = 'c';
+	//andromon_usb->data.fp = 3;
 
 	andromon_usb->udev = usb_get_dev(interface_to_usbdev(interface));
 	andromon_usb->interface = interface;
 
 	if(id->idVendor == 0x18D1 && (id->idProduct == 0x2D00 || id->idProduct == 0x2D01)){
 		printk("ANDROMON:  [%04X:%04X] Connected in AOA mode\n", id->idVendor, id->idProduct);
+
+		printk("ANDROMON: usb_interface->cur_altsetting->string = %s %s\n", interface->cur_altsetting->string, interface->cur_altsetting->extra);
 
 		interface_descriptor = interface->cur_altsetting;
 		for(i=0; i<interface_descriptor->desc.bNumEndpoints; i++){
@@ -244,6 +314,8 @@ static int andromon_probe(struct usb_interface *interface, const struct usb_devi
 			//goto error;
 		}
 		andromon_usb->minor = andromon_usb->interface->minor;
+
+		//SetConfiguration(andromon_usb, (char*)data);
 	}
 	else{
 		datalen = GetProtocol(andromon_usb, (char*)data);
