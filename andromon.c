@@ -184,7 +184,7 @@ static ssize_t andromon_write(struct file *file, const char __user *user_buf, si
 		retval = -EFAULT;
 		goto unlock_exit;
 	}*/
-
+printk("pipe  = %d\n", usb_sndbulkpipe(dev->udev, dev->bulk_out_endpointAddr));
 	usb_fill_bulk_urb(urb, 
 					  dev->udev,
 					  usb_sndbulkpipe(dev->udev, dev->bulk_out_endpointAddr),
@@ -366,7 +366,7 @@ static struct usb_device_id andromon_table[] = {
 	{ USB_DEVICE(0x18d1, 0x4e42) },	// Nexus 7
 	{ USB_DEVICE(0x18d1, 0xd002) },	// Nexus 7
 	{ USB_DEVICE(0x18d1, 0x2d00) },	// Nexus 7 AOA
-	{ USB_DEVICE(0x18d1, 0x2d01) },	// Nexus 7 AOA
+	{ USB_DEVICE_AND_INTERFACE_INFO(0x18d1, 0x2d01, 255, 255, 0) },	// Nexus 7 AOA
 	{ USB_DEVICE(0x0bb4, 0x0cb0) },	// HTC wildfire
 	{ USB_DEVICE(0x276d, 0x1105) },	// USB mouse
 	{}	/* Terminating entry */
